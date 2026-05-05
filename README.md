@@ -10,6 +10,7 @@ stop distance from the remaining daily-loss room.
 ```
 Strategies/
   EthVpVwapStrategy.cs          # main NinjaScript Strategy
+  EthVpVwapStrategyInverse.cs   # mirror that inverts every entry signal
 AddOns/NjAuto/
   StrategyTypes.cs              # enums & DTOs
   SessionClock.cs               # per-instrument ETH window resolver (DST-safe)
@@ -96,6 +97,27 @@ Example for an Apex-style $50K eval:
 - **TP**: structural target (POC, VA edge, VWAP, +/-2sigma) with a min-R floor.
 - **Guard**: SoftHalt at daily limit -> no new entries, open trade left to
   run on its SL/TP. Locked at overall DD breach.
+
+## Inverse strategy
+
+`Strategies/EthVpVwapStrategyInverse.cs` is a parallel strategy that
+reuses the same AddOns library and produces the exact same signals as
+`EthVpVwapStrategy`, then **inverts each one** before sending it to the
+sizer:
+
+- `IsLong` is flipped.
+- `StructuralTarget` is reflected across `EntryPrice` so the SL/TP
+  geometry and `MinRMultiple` filter compare identical distances.
+
+All other behaviour - propfirm guard, scaling table, historical levels,
+plots, journal - is byte-for-byte the same. Both classes can be loaded
+side-by-side; the inverse uses an `INV_` signal-name prefix and tags
+its draw objects with `_inv_` so brackets and chart annotations don't
+collide. Templates live under
+`templates/Strategy/EthVpVwapStrategyInverse/`.
+
+Use it to A/B test whether the base entry hypothesis is wrong-signed
+without touching the main code path.
 
 ## Verification
 
