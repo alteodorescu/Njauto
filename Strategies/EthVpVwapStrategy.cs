@@ -165,6 +165,15 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty, Display(Name = "Min R multiple", GroupName = "6. Sizing", Order = 4)]
         public double MinRMultiple { get; set; } = 1.0;
 
+        [NinjaScriptProperty, Display(Name = "Enable self-awareness (propfirm)", GroupName = "6. Sizing", Order = 5)]
+        public bool EnableSelfAwareness { get; set; } = true;
+
+        [NinjaScriptProperty, Display(Name = "Fixed contracts (when self-awareness off)", GroupName = "6. Sizing", Order = 6)]
+        public int FixedContracts { get; set; } = 1;
+
+        [NinjaScriptProperty, Display(Name = "Fixed SL ticks (when self-awareness off)", GroupName = "6. Sizing", Order = 7)]
+        public int FixedSlTicks { get; set; } = 20;
+
         [NinjaScriptProperty, Display(Name = "Journal CSV directory (blank=disabled)", GroupName = "7. Diagnostics", Order = 0)]
         public string JournalDir { get; set; } = "";
 
@@ -366,7 +375,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (sessionClock.TimeIntoSession(Time[0]).TotalMinutes < SkipFirstMinutes) return;
 
             if (Position.MarketPosition != MarketPosition.Flat) return;
-            if (!guard.AllowsNewEntries) return;
+            if (EnableSelfAwareness && !guard.AllowsNewEntries) return;
 
             if ((Time[0] - lastExitTime).TotalMinutes < CooldownMinutes) return;
             if (GetCurrentSpreadTicks() > MaxSpreadTicks) return;
@@ -450,13 +459,17 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
 
             // Regime label, top-right corner.
-            string label = string.Format(
-                "Regime: {0} ({1})   Guard: {2}   Equity: ${3:F0}   DailyRoom: ${4:F0}",
-                regime.Current, regime.Bias, guard.Level,
-                GetCurrentEquity(), rules.DailyLossRoom());
+            string sizingTag = EnableSelfAwareness
+                ? string.Format("Guard: {0}   Equity: ${1:F0}   DailyRoom: ${2:F0}",
+                    guard.Level, GetCurrentEquity(), rules.DailyLossRoom())
+                : string.Format("Sizing: FIXED ({0}c x {1}t)",
+                    FixedContracts, FixedSlTicks);
+
+            string label = string.Format("Regime: {0} ({1})   {2}",
+                regime.Current, regime.Bias, sizingTag);
 
             Brush regimeBrush =
-                guard.Level != GuardLevel.Armed ? Brushes.OrangeRed
+                (EnableSelfAwareness && guard.Level != GuardLevel.Armed) ? Brushes.OrangeRed
                 : regime.Current == Regime.Trend ? Brushes.MediumSeaGreen
                 : regime.Current == Regime.Balance ? Brushes.DodgerBlue
                 : Brushes.Gray;
@@ -744,9 +757,34 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private void TryEnter(TradeSignal sig)
         {
-            double netProfit = rules.NetProfit();
-            double dailyRoom = rules.DailyLossRoom();
-            var decision = sizer.Compute(netProfit, dailyRoom);
+            PositionSizer.SizingDecision decision;
+            if (EnableSelfAwareness)
+            {
+                double netProfit = rules.NetProfit();
+                double dailyRoom = rules.DailyLossRoom();
+                decision = sizer.Compute(netProfit, dailyRoom);
+            }
+            else
+            {
+                // Fixed-size mode: ignore propfirm scaling/daily-room math.
+                if (FixedContracts <= 0 || FixedSlTicks < MinSlTicks)
+                {
+                    if (VerboseLog) Print(string.Format(
+                        "[Skip] Fixed sizing invalid: contracts={0}, slTicks={1} (min {2})",
+                        FixedContracts, FixedSlTicks, MinSlTicks));
+                    return;
+                }
+                decision = new PositionSizer.SizingDecision
+                {
+                    TakeTrade = true,
+                    Contracts = FixedContracts,
+                    SlTicks = FixedSlTicks,
+                    Code = PositionSizer.SkipCode.None,
+                    Reason = string.Format("Fixed: {0}c x {1}t = ${2:F2} risk",
+                        FixedContracts, FixedSlTicks,
+                        FixedContracts * FixedSlTicks * meta.TickValue)
+                };
+            }
 
             if (!decision.TakeTrade)
             {

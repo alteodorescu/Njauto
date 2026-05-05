@@ -46,6 +46,9 @@
     <MinSlTicks>8</MinSlTicks>
     <MaxSlTicks>40</MaxSlTicks>
     <MinRMultiple>0.7</MinRMultiple>
+    <EnableSelfAwareness>true</EnableSelfAwareness>
+    <FixedContracts>1</FixedContracts>
+    <FixedSlTicks>20</FixedSlTicks>
     <JournalDir></JournalDir>
     <VerboseLog>false</VerboseLog>
     <ShowChartPlots>true</ShowChartPlots>

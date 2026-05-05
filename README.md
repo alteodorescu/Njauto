@@ -52,7 +52,10 @@ Properties are grouped on the strategy panel:
    TrailingHighEodBalance / TrailingHighIntradayEquity), Apex-style profit
    lock threshold, warning %.
 6. **Sizing** - scaling tiers as `minProfit:contracts;...`, safety buffer,
-   min/max SL ticks, min R multiple.
+   min/max SL ticks, min R multiple, **Enable self-awareness** toggle
+   (default true). When self-awareness is off the strategy ignores the
+   scaling table and propfirm guard entirely and uses **Fixed contracts**
+   + **Fixed SL ticks** for every trade.
 7. **Diagnostics** - journal CSV directory, verbose log toggle, chart plots toggle.
 8. **Historical Levels** - enable toggle, lookback days (default 5),
    min touches before a level qualifies (default 10), touch tolerance
