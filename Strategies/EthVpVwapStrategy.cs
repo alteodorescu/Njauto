@@ -21,10 +21,15 @@ using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
 using System.IO;
 using System.Linq;
+using System.Windows.Media;
+using System.Xml.Serialization;
 using NinjaTrader.Cbi;
 using NinjaTrader.Data;
+using NinjaTrader.Gui;
+using NinjaTrader.Gui.Tools;
 using NinjaTrader.NinjaScript;
 using NinjaTrader.NinjaScript.AddOns.NjAuto;
+using NinjaTrader.NinjaScript.DrawingTools;
 using NinjaTrader.NinjaScript.Strategies;
 #endregion
 
@@ -162,6 +167,19 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty, Display(Name = "Verbose log", GroupName = "7. Diagnostics", Order = 1)]
         public bool VerboseLog { get; set; } = false;
 
+        [NinjaScriptProperty, Display(Name = "Show chart plots", GroupName = "7. Diagnostics", Order = 2)]
+        public bool ShowChartPlots { get; set; } = true;
+
+        // Plot accessors (indexes match AddPlot order in SetDefaults).
+        [Browsable(false), XmlIgnore] public Series<double> VwapPlot   { get { return Values[0]; } }
+        [Browsable(false), XmlIgnore] public Series<double> Upper1Plot { get { return Values[1]; } }
+        [Browsable(false), XmlIgnore] public Series<double> Lower1Plot { get { return Values[2]; } }
+        [Browsable(false), XmlIgnore] public Series<double> Upper2Plot { get { return Values[3]; } }
+        [Browsable(false), XmlIgnore] public Series<double> Lower2Plot { get { return Values[4]; } }
+        [Browsable(false), XmlIgnore] public Series<double> PocPlot    { get { return Values[5]; } }
+        [Browsable(false), XmlIgnore] public Series<double> VahPlot    { get { return Values[6]; } }
+        [Browsable(false), XmlIgnore] public Series<double> ValPlot    { get { return Values[7]; } }
+
         #endregion
 
         protected override void OnStateChange()
@@ -186,6 +204,17 @@ namespace NinjaTrader.NinjaScript.Strategies
                 StopTargetHandling = StopTargetHandling.PerEntryExecution;
                 BarsRequiredToTrade = 20;
                 IsInstantiatedOnEachOptimizationIteration = true;
+
+                // Plots are added in fixed order so the Values[i] indexers
+                // above resolve to the correct series.
+                AddPlot(new Stroke(Brushes.DodgerBlue,        2), PlotStyle.Line, "VWAP");
+                AddPlot(new Stroke(Brushes.LightSteelBlue,    1), PlotStyle.Line, "Upper1Sigma");
+                AddPlot(new Stroke(Brushes.LightSteelBlue,    1), PlotStyle.Line, "Lower1Sigma");
+                AddPlot(new Stroke(Brushes.SteelBlue,         1), PlotStyle.Line, "Upper2Sigma");
+                AddPlot(new Stroke(Brushes.SteelBlue,         1), PlotStyle.Line, "Lower2Sigma");
+                AddPlot(new Stroke(Brushes.Goldenrod,         2), PlotStyle.Line, "POC");
+                AddPlot(new Stroke(Brushes.MediumSeaGreen,    2), PlotStyle.Line, "VAH");
+                AddPlot(new Stroke(Brushes.IndianRed,         2), PlotStyle.Line, "VAL");
             }
             else if (State == State.Configure)
             {
@@ -302,6 +331,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
 
             UpdateContextCounters();
+            UpdatePlots();
 
             if (!sessionClock.IsInSession(Time[0])) return;
             if (sessionClock.TimeIntoSession(Time[0]).TotalMinutes < SkipFirstMinutes) return;
@@ -337,6 +367,87 @@ namespace NinjaTrader.NinjaScript.Strategies
             rules.OnSessionEnd(GetCurrentEquity());
             Print("=== ETH session end: " + sessionEndLocal +
                 ", equity=" + GetCurrentEquity().ToString("F2"));
+        }
+
+        private void UpdatePlots()
+        {
+            if (!ShowChartPlots) return;
+
+            // VWAP and bands
+            if (vwap.HasData)
+            {
+                Values[0][0] = vwap.Vwap;
+                Values[1][0] = vwap.UpperBand1;
+                Values[2][0] = vwap.LowerBand1;
+                Values[3][0] = vwap.UpperBand2;
+                Values[4][0] = vwap.LowerBand2;
+            }
+            else
+            {
+                Values[0][0] = double.NaN;
+                Values[1][0] = double.NaN;
+                Values[2][0] = double.NaN;
+                Values[3][0] = double.NaN;
+                Values[4][0] = double.NaN;
+            }
+
+            // POC / VAH / VAL
+            if (profile.HasData)
+            {
+                Values[5][0] = profile.Poc;
+                Values[6][0] = profile.Vah;
+                Values[7][0] = profile.Val;
+            }
+            else
+            {
+                Values[5][0] = double.NaN;
+                Values[6][0] = double.NaN;
+                Values[7][0] = double.NaN;
+            }
+
+            // Regime label, top-right corner.
+            string label = string.Format(
+                "Regime: {0} ({1})   Guard: {2}   Equity: ${3:F0}   DailyRoom: ${4:F0}",
+                regime.Current, regime.Bias, guard.Level,
+                GetCurrentEquity(), rules.DailyLossRoom());
+
+            Brush regimeBrush =
+                guard.Level != GuardLevel.Armed ? Brushes.OrangeRed
+                : regime.Current == Regime.Trend ? Brushes.MediumSeaGreen
+                : regime.Current == Regime.Balance ? Brushes.DodgerBlue
+                : Brushes.Gray;
+
+            Draw.TextFixed(this, "njauto_regime", label,
+                TextPosition.TopRight,
+                regimeBrush,
+                new SimpleFont("Consolas", 11),
+                Brushes.Transparent, Brushes.Transparent, 0);
+        }
+
+        private void DrawEntryMarker(TradeSignal sig, double slPrice, double tpPrice, int contracts)
+        {
+            if (!ShowChartPlots) return;
+            string tag = "njauto_entry_" + CurrentBar;
+
+            if (sig.IsLong)
+            {
+                Draw.ArrowUp(this, tag, true, 0, Low[0] - 2 * meta.TickSize, Brushes.LimeGreen);
+            }
+            else
+            {
+                Draw.ArrowDown(this, tag, true, 0, High[0] + 2 * meta.TickSize, Brushes.OrangeRed);
+            }
+
+            Draw.Text(this, tag + "_lbl", string.Format("{0} {1}c", sig.Kind, contracts),
+                0,
+                sig.IsLong ? Low[0] - 6 * meta.TickSize : High[0] + 6 * meta.TickSize,
+                sig.IsLong ? Brushes.LimeGreen : Brushes.OrangeRed);
+
+            // Faint horizontal lines at SL and TP for the bar of entry, extending forward 30 bars.
+            Draw.Line(this, tag + "_sl", false, 0, slPrice, -30, slPrice,
+                Brushes.IndianRed, DashStyleHelper.Dash, 1);
+            Draw.Line(this, tag + "_tp", false, 0, tpPrice, -30, tpPrice,
+                Brushes.MediumSeaGreen, DashStyleHelper.Dash, 1);
         }
 
         private void UpdateContextCounters()
@@ -563,6 +674,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 sig.IsLong ? "LONG" : "SHORT",
                 decision.Contracts, sig.EntryPrice, slPrice, decision.SlTicks, tpPrice, sig.Reason));
 
+            DrawEntryMarker(sig, slPrice, tpPrice, decision.Contracts);
             Journal("enter", sig, decision);
         }
 
