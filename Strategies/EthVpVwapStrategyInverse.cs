@@ -149,6 +149,9 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty, Display(Name = "Warning % of daily limit", GroupName = "5. Propfirm", Order = 6)]
         public double WarningPctOfDailyLoss { get; set; } = 0.80;
 
+        [NinjaScriptProperty, Display(Name = "Use fixed overall floor (overrides anchor)", GroupName = "5. Propfirm", Order = 7)]
+        public bool UseFixedOverallFloor { get; set; } = false;
+
         [NinjaScriptProperty, Display(Name = "Scaling tiers", GroupName = "6. Sizing", Order = 0)]
         public string ScalingTiers { get; set; } = "0:1;500:2;1500:3;3000:5";
 
@@ -282,7 +285,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                     MaxOverallLoss = MaxOverallLoss,
                     OverallLossAnchor = OverallLossAnchorMode,
                     LockProfitAt = LockProfitAt,
-                    WarningPctOfDailyLoss = WarningPctOfDailyLoss
+                    WarningPctOfDailyLoss = WarningPctOfDailyLoss,
+                    UseFixedOverallFloor = UseFixedOverallFloor
                 };
 
                 guard = new GuardState(rules);
@@ -557,6 +561,39 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
         }
 
+        // Reject a signal whose target sits on the wrong side of entry.
+        // Mirrored from the base strategy so we don't pass garbage into
+        // InvertSignal (which would just reflect the garbage to the
+        // opposite-and-still-wrong side).
+        private static TradeSignal Validate(TradeSignal sig)
+        {
+            if (sig == null) return null;
+            bool wrongSide = sig.IsLong
+                ? sig.StructuralTarget <= sig.EntryPrice
+                : sig.StructuralTarget >= sig.EntryPrice;
+            return wrongSide ? null : sig;
+        }
+
+        private static double PickFurtherUpward(double entry, double a, double b)
+        {
+            bool aOk = a > entry;
+            bool bOk = b > entry;
+            if (aOk && bOk) return Math.Min(a, b);
+            if (aOk) return a;
+            if (bOk) return b;
+            return entry;
+        }
+
+        private static double PickFurtherDownward(double entry, double a, double b)
+        {
+            bool aOk = a < entry;
+            bool bOk = b < entry;
+            if (aOk && bOk) return Math.Max(a, b);
+            if (aOk) return a;
+            if (bOk) return b;
+            return entry;
+        }
+
         // Detection logic - identical to the base strategy. Inversion
         // happens at the call site in OnBarUpdate via InvertSignal().
         private TradeSignal TryFindSetup()
@@ -565,7 +602,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             if (EnableHistoricalLevels)
             {
-                var histSig = TryFindHistoricalLevelSetup();
+                var histSig = Validate(TryFindHistoricalLevelSetup());
                 if (histSig != null) return histSig;
             }
 
@@ -581,77 +618,77 @@ namespace NinjaTrader.NinjaScript.Strategies
                     && close > profile.Val
                     && close > vwap.LowerBand2)
                 {
-                    return new TradeSignal
+                    return Validate(new TradeSignal
                     {
                         Kind = SetupKind.BalanceFadeVal,
                         IsLong = true,
                         EntryPrice = close,
                         StructuralTarget = profile.Poc,
                         Reason = "Balance: VAL fade long, target POC"
-                    };
+                    });
                 }
 
                 if (High[0] >= profile.Vah - tickTol
                     && close < profile.Vah
                     && close < vwap.UpperBand2)
                 {
-                    return new TradeSignal
+                    return Validate(new TradeSignal
                     {
                         Kind = SetupKind.BalanceFadeVah,
                         IsLong = false,
                         EntryPrice = close,
                         StructuralTarget = profile.Poc,
                         Reason = "Balance: VAH fade short, target POC"
-                    };
+                    });
                 }
 
                 if (close >= profile.Val && close <= profile.Vah)
                 {
                     if (barsBelowVwap >= 5 && close > vwap.Vwap && Open[0] < vwap.Vwap)
                     {
-                        return new TradeSignal
+                        return Validate(new TradeSignal
                         {
                             Kind = SetupKind.BalanceVwapReclaim,
                             IsLong = true,
                             EntryPrice = close,
                             StructuralTarget = profile.Vah,
                             Reason = "Balance: VWAP reclaim long, target VAH"
-                        };
+                        });
                     }
                     if (barsAboveVwap >= 5 && close < vwap.Vwap && Open[0] > vwap.Vwap)
                     {
-                        return new TradeSignal
+                        return Validate(new TradeSignal
                         {
                             Kind = SetupKind.BalanceVwapReclaim,
                             IsLong = false,
                             EntryPrice = close,
                             StructuralTarget = profile.Val,
                             Reason = "Balance: VWAP reject short, target VAL"
-                        };
+                        });
                     }
                 }
 
                 if (barsTouchingPocFromAbove >= 3 && close > profile.Poc && close < Open[0])
                 {
-                    return new TradeSignal
+                    return Validate(new TradeSignal
                     {
                         Kind = SetupKind.BalanceRejectPoc,
                         IsLong = true,
                         EntryPrice = close,
                         StructuralTarget = profile.Vah,
                         Reason = "Balance: POC reject long, target VAH"
-                    };
+                    });
                 }
                 if (barsTouchingPocFromBelow >= 3 && close < profile.Poc && close > Open[0])
                 {
-                    return new TradeSignal
+                    return Validate(new TradeSignal
                     {
                         Kind = SetupKind.BalanceRejectPoc,
                         IsLong = false,
                         EntryPrice = close,
                         StructuralTarget = profile.Val,
                         Reason = "Balance: POC reject short, target VAL"
-                    };
+                    });
                 }
             }
 
@@ -664,15 +701,15 @@ namespace NinjaTrader.NinjaScript.Strategies
                 {
                     double extension = profile.Vah + profile.ValueAreaWidth;
                     double bandTarget = vwap.UpperBand2;
-                    double target = Math.Min(extension, bandTarget);
-                    return new TradeSignal
+                    double target = PickFurtherUpward(close, extension, bandTarget);
+                    return Validate(new TradeSignal
                     {
                         Kind = SetupKind.TrendAcceptanceLong,
                         IsLong = true,
                         EntryPrice = close,
                         StructuralTarget = target,
                         Reason = "Trend: acceptance above VAH"
-                    };
+                    });
                 }
                 if (regime.Bias == TrendBias.Down
                     && close < profile.Val
@@ -681,38 +718,38 @@ namespace NinjaTrader.NinjaScript.Strategies
                 {
                     double extension = profile.Val - profile.ValueAreaWidth;
                     double bandTarget = vwap.LowerBand2;
-                    double target = Math.Max(extension, bandTarget);
-                    return new TradeSignal
+                    double target = PickFurtherDownward(close, extension, bandTarget);
+                    return Validate(new TradeSignal
                     {
                         Kind = SetupKind.TrendAcceptanceShort,
                         IsLong = false,
                         EntryPrice = close,
                         StructuralTarget = target,
                         Reason = "Trend: acceptance below VAL"
-                    };
+                    });
                 }
 
                 if (regime.Bias == TrendBias.Up && Low[0] <= vwap.LowerBand2 + tickTol && close > vwap.LowerBand2)
                 {
-                    return new TradeSignal
+                    return Validate(new TradeSignal
                     {
                         Kind = SetupKind.TrendBandFade,
                         IsLong = true,
                         EntryPrice = close,
                         StructuralTarget = vwap.Vwap,
                         Reason = "Trend: -2sigma band fade long"
-                    };
+                    });
                 }
                 if (regime.Bias == TrendBias.Down && High[0] >= vwap.UpperBand2 - tickTol && close < vwap.UpperBand2)
                 {
-                    return new TradeSignal
+                    return Validate(new TradeSignal
                     {
                         Kind = SetupKind.TrendBandFade,
                         IsLong = false,
                         EntryPrice = close,
                         StructuralTarget = vwap.Vwap,
                         Reason = "Trend: +2sigma band fade short"
-                    };
+                    });
                 }
             }
 

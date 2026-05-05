@@ -19,6 +19,11 @@ namespace NinjaTrader.NinjaScript.AddOns.NjAuto
         public double LockProfitAt { get; set; } // Apex-style: trailing -> static once profit >= this
         public double WarningPctOfDailyLoss { get; set; } = 0.80;
 
+        // When true, the overall floor is forced to (StartingBalance - MaxOverallLoss)
+        // regardless of OverallLossAnchor or LockProfitAt. Useful when you want a
+        // simple fixed DD ceiling rather than a trailing one.
+        public bool UseFixedOverallFloor { get; set; } = false;
+
         // Live state
         public double SessionStartEquity { get; private set; }
         public double IntradayHighEquity { get; private set; }
@@ -59,6 +64,13 @@ namespace NinjaTrader.NinjaScript.AddOns.NjAuto
 
         private void RecomputeOverallFloor()
         {
+            // Hard override: fixed floor at StartingBalance - MaxOverallLoss.
+            if (UseFixedOverallFloor)
+            {
+                EffectiveOverallFloor = StartingBalance - MaxOverallLoss;
+                return;
+            }
+
             if (LockProfitAt > 0)
             {
                 double profitFromStart = TrailingHighIntradayEquity - StartingBalance;

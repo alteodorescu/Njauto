@@ -51,7 +51,11 @@ Properties are grouped on the strategy panel:
 5. **Propfirm** - starting balance, daily loss limit, daily loss anchor,
    max overall loss, overall loss anchor (StartingBalance /
    TrailingHighEodBalance / TrailingHighIntradayEquity), Apex-style profit
-   lock threshold, warning %.
+   lock threshold, warning %, **Use fixed overall floor** toggle.
+   When the toggle is on, the floor is hard-pinned to
+   `StartingBalance - MaxOverallLoss` and the anchor / Apex-lock logic
+   is bypassed entirely. Use it when you want a static DD ceiling rather
+   than one that trails up with every new equity high.
 6. **Sizing** - scaling tiers as `minProfit:contracts;...`, safety buffer,
    min/max SL ticks, min R multiple, **Enable self-awareness** toggle
    (default true). When self-awareness is off the strategy ignores the
@@ -97,6 +101,11 @@ Example for an Apex-style $50K eval:
 - **TP**: structural target (POC, VA edge, VWAP, +/-2sigma) with a min-R floor.
 - **Guard**: SoftHalt at daily limit -> no new entries, open trade left to
   run on its SL/TP. Locked at overall DD breach.
+- **Target validation**: every entry signal is checked at the source -
+  if the structural target lands on the wrong side of entry (would
+  require price to move backwards), the signal is dropped. Catches the
+  edge case where Math.Min/Math.Max in trend-acceptance setups would
+  pick a VWAP +/-2sigma band that has drifted past the breakout close.
 
 ## Inverse strategy
 
