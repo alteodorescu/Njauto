@@ -51,7 +51,14 @@ namespace NinjaTrader.NinjaScript.AddOns.NjAuto
         public int MaxContractsFor(double currentNetProfit)
         {
             if (tiers.Count == 0) return 0;
-            int contracts = 0;
+
+            // Floor: if profit is below the lowest tier's threshold, return that
+            // tier's contract count. The propfirm's daily-loss / DD rules — not
+            // the scaling table — are what halt trading on a losing day.
+            if (currentNetProfit < tiers[0].MinNetProfit)
+                return tiers[0].MaxContracts;
+
+            int contracts = tiers[0].MaxContracts;
             for (int i = 0; i < tiers.Count; i++)
             {
                 if (currentNetProfit >= tiers[i].MinNetProfit)

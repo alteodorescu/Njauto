@@ -67,6 +67,9 @@ namespace NinjaTrader.NinjaScript.Strategies
         private double realizedPnL;
         private string journalCsvPath;
 
+        // ----- Log dedup -----
+        private string lastSkipReason;
+
         #region User Inputs
 
         [NinjaScriptProperty, Display(Name = "Master symbol (e.g. ES, MNQ)", GroupName = "1. Instrument", Order = 0)]
@@ -356,6 +359,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             regime.Reset();
             barsAboveVwap = barsBelowVwap = 0;
             barsTouchingPocFromAbove = barsTouchingPocFromBelow = 0;
+            lastSkipReason = null;
 
             // Re-anchor equity bookkeeping for the new session.
             rules.OnSessionStart(GetCurrentEquity());
@@ -637,10 +641,17 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             if (!decision.TakeTrade)
             {
-                if (VerboseLog) Print("[Skip] " + decision.Reason);
+                // Only log when the reason changes - signals can fire on
+                // many consecutive bars and the log would otherwise flood.
+                if (VerboseLog && decision.Reason != lastSkipReason)
+                {
+                    Print("[Skip] " + decision.Reason);
+                    lastSkipReason = decision.Reason;
+                }
                 Journal("skip", sig, decision);
                 return;
             }
+            lastSkipReason = null;
 
             double slDistance = decision.SlTicks * meta.TickSize;
             double slPrice = sig.IsLong ? sig.EntryPrice - slDistance : sig.EntryPrice + slDistance;
