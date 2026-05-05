@@ -20,6 +20,8 @@ AddOns/NjAuto/
   PositionSizer.cs              # contracts + SL ticks computation
   PropfirmRules.cs              # daily loss / overall DD rule engine
   GuardState.cs                 # Armed -> Warning -> SoftHalt -> Locked latch
+  HistoricalLevel.cs            # one prior-session VP level + touch count
+  HistoricalLevelStore.cs       # rolling N-day store, snapshot/prune/touch
 ```
 
 ## Installation
@@ -51,7 +53,10 @@ Properties are grouped on the strategy panel:
    lock threshold, warning %.
 6. **Sizing** - scaling tiers as `minProfit:contracts;...`, safety buffer,
    min/max SL ticks, min R multiple.
-7. **Diagnostics** - journal CSV directory, verbose log toggle.
+7. **Diagnostics** - journal CSV directory, verbose log toggle, chart plots toggle.
+8. **Historical Levels** - enable toggle, lookback days (default 5),
+   min touches before a level qualifies (default 10), touch tolerance
+   in ticks (default 2).
 
 ### Scaling tiers format
 
@@ -79,6 +84,9 @@ Example for an Apex-style $50K eval:
 - **Entries** (one open position at a time):
   - Balance: VAL fade long, VAH fade short, VWAP reclaim, POC rejection.
   - Trend: VAH/VAL acceptance + retest, VWAP +/-2sigma band fade.
+  - Historical level: when price touches a prior-session POC/VAH/VAL that
+    has accumulated >= MinTouches touches, trade in the direction of
+    current VWAP (target = VWAP). Independent of regime classification.
 - **Sizing**: `contracts = scaling.lookup(netProfit)`,
   `slTicks = floor((dailyLossRoom - safetyBuffer) / (contracts * tickValue))`,
   clamped to `[minSlTicks, maxSlTicks]`. Skip the trade if room too tight.

@@ -47,6 +47,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         private PositionSizer sizer;
         private PropfirmRules rules;
         private GuardState guard;
+        private HistoricalLevelStore historicalStore;
 
         // ----- Trade state -----
         private string activeSignal;
@@ -173,6 +174,18 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty, Display(Name = "Show chart plots", GroupName = "7. Diagnostics", Order = 2)]
         public bool ShowChartPlots { get; set; } = true;
 
+        [NinjaScriptProperty, Display(Name = "Enable historical levels", GroupName = "8. Historical Levels", Order = 0)]
+        public bool EnableHistoricalLevels { get; set; } = true;
+
+        [NinjaScriptProperty, Display(Name = "Lookback days", GroupName = "8. Historical Levels", Order = 1)]
+        public int LookbackDays { get; set; } = 5;
+
+        [NinjaScriptProperty, Display(Name = "Min touches", GroupName = "8. Historical Levels", Order = 2)]
+        public int MinTouches { get; set; } = 10;
+
+        [NinjaScriptProperty, Display(Name = "Touch tolerance (ticks)", GroupName = "8. Historical Levels", Order = 3)]
+        public int LevelTouchToleranceTicks { get; set; } = 2;
+
         // Plot accessors (indexes match AddPlot order in SetDefaults).
         [Browsable(false), XmlIgnore] public Series<double> VwapPlot   { get { return Values[0]; } }
         [Browsable(false), XmlIgnore] public Series<double> Upper1Plot { get { return Values[1]; } }
@@ -271,6 +284,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                 guard.Transition += (prev, next, reason) =>
                     Print(string.Format("[Guard] {0} -> {1} : {2}", prev, next, reason));
 
+                historicalStore = new HistoricalLevelStore(
+                    LookbackDays, LevelTouchToleranceTicks, meta.TickSize);
+
                 sessionClock.SessionStarted += OnEthSessionStart;
                 sessionClock.SessionEnded += OnEthSessionEnd;
 
@@ -339,7 +355,12 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
 
             UpdateContextCounters();
+
+            // Tally any new touches of historical levels on this minute close.
+            historicalStore.OnMinuteClose(Low[0], High[0], Time[0]);
+
             UpdatePlots();
+            UpdateHistoricalLevelPlots();
 
             if (!sessionClock.IsInSession(Time[0])) return;
             if (sessionClock.TimeIntoSession(Time[0]).TotalMinutes < SkipFirstMinutes) return;
@@ -366,6 +387,11 @@ namespace NinjaTrader.NinjaScript.Strategies
             barsTouchingPocFromAbove = barsTouchingPocFromBelow = 0;
             lastSkipCategory = null;
 
+            // Drop any historical level whose source session is older than
+            // the configured lookback window.
+            historicalStore.LookbackDays = LookbackDays;
+            historicalStore.PruneOlderThan(sessionStartLocal);
+
             // Re-anchor equity bookkeeping for the new session.
             rules.OnSessionStart(GetCurrentEquity());
             guard.OnSessionStart();
@@ -374,6 +400,15 @@ namespace NinjaTrader.NinjaScript.Strategies
         private void OnEthSessionEnd(DateTime sessionEndLocal)
         {
             rules.OnSessionEnd(GetCurrentEquity());
+
+            // Snapshot today's POC/VAH/VAL into the historical store so
+            // future sessions can react to it.
+            if (profile.HasData)
+            {
+                historicalStore.AddSessionLevels(
+                    sessionEndLocal, profile.Poc, profile.Vah, profile.Val);
+            }
+
             Print("=== ETH session end: " + sessionEndLocal +
                 ", equity=" + GetCurrentEquity().ToString("F2"));
         }
@@ -433,6 +468,41 @@ namespace NinjaTrader.NinjaScript.Strategies
                 Brushes.Transparent, Brushes.Transparent, 0);
         }
 
+        private void UpdateHistoricalLevelPlots()
+        {
+            if (!ShowChartPlots || !EnableHistoricalLevels) return;
+
+            // Each level gets a stable tag so NT8 replaces the existing line
+            // when the level's qualification status or price changes.
+            foreach (var level in historicalStore.Levels)
+            {
+                string tag = string.Format("histlvl_{0:yyyyMMdd}_{1}",
+                    level.CreatedAt, level.Type);
+
+                bool qualified = level.TouchCount >= MinTouches;
+                if (!qualified)
+                {
+                    Draw.HorizontalLine(this, tag, false, level.Price,
+                        Brushes.Gray, DashStyleHelper.Dot, 1);
+                    continue;
+                }
+
+                Brush brush =
+                    level.Type == HistoricalLevelType.Poc ? Brushes.Goldenrod
+                    : level.Type == HistoricalLevelType.Vah ? Brushes.MediumSeaGreen
+                    : Brushes.IndianRed;
+
+                Draw.HorizontalLine(this, tag, false, level.Price,
+                    brush, DashStyleHelper.Dash, 2);
+
+                // Touch-count label, anchored to current bar.
+                string lblTag = tag + "_lbl";
+                Draw.Text(this, lblTag,
+                    string.Format("{0} ({1})", level.Type, level.TouchCount),
+                    0, level.Price + meta.TickSize, brush);
+            }
+        }
+
         private void DrawEntryMarker(TradeSignal sig, double slPrice, double tpPrice, int contracts)
         {
             if (!ShowChartPlots) return;
@@ -482,7 +552,17 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private TradeSignal TryFindSetup()
         {
-            if (!profile.HasData || !vwap.HasData) return null;
+            if (!vwap.HasData) return null;
+
+            // Historical-level setups carry their own validation (touch count)
+            // and run independent of the regime classifier.
+            if (EnableHistoricalLevels)
+            {
+                var histSig = TryFindHistoricalLevelSetup();
+                if (histSig != null) return histSig;
+            }
+
+            if (!profile.HasData) return null;
             if (regime.Current == Regime.Undefined) return null;
 
             double close = Close[0];
@@ -636,6 +716,30 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
 
             return null;
+        }
+
+        private TradeSignal TryFindHistoricalLevelSetup()
+        {
+            var level = historicalStore.FindTouchedQualifyingLevel(
+                Low[0], High[0], Close[0], MinTouches);
+            if (level == null) return null;
+
+            // Trade direction is set by where VWAP sits relative to current price.
+            // If VWAP is above price, target reverts UP to VWAP - long. Mirror short.
+            double distanceToVwap = vwap.Vwap - Close[0];
+            if (Math.Abs(distanceToVwap) < meta.TickSize) return null; // sitting on VWAP
+
+            bool isLong = distanceToVwap > 0;
+            return new TradeSignal
+            {
+                Kind = SetupKind.HistoricalLevelVwapRevert,
+                IsLong = isLong,
+                EntryPrice = Close[0],
+                StructuralTarget = vwap.Vwap,
+                Reason = string.Format(
+                    "HistLvl {0}@{1:F2} touches={2} -> revert to VWAP {3:F2}",
+                    level.Type, level.Price, level.TouchCount, vwap.Vwap)
+            };
         }
 
         private void TryEnter(TradeSignal sig)

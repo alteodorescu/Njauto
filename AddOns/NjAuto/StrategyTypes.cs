@@ -29,7 +29,8 @@ namespace NinjaTrader.NinjaScript.AddOns.NjAuto
         BalanceRejectPoc,
         TrendAcceptanceLong,
         TrendAcceptanceShort,
-        TrendBandFade
+        TrendBandFade,
+        HistoricalLevelVwapRevert
     }
 
     public enum DailyLossAnchor

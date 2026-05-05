@@ -49,5 +49,9 @@
     <JournalDir></JournalDir>
     <VerboseLog>false</VerboseLog>
     <ShowChartPlots>true</ShowChartPlots>
+    <EnableHistoricalLevels>true</EnableHistoricalLevels>
+    <LookbackDays>5</LookbackDays>
+    <MinTouches>10</MinTouches>
+    <LevelTouchToleranceTicks>2</LevelTouchToleranceTicks>
   </NinjaScriptStrategy>
 </NinjaTrader>
