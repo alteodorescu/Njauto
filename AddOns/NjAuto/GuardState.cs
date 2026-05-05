@@ -23,6 +23,11 @@ namespace NinjaTrader.NinjaScript.AddOns.NjAuto
 
         public void OnSessionStart()
         {
+            // Locked = overall DD breach. Once that floor is hit, the propfirm
+            // account is gone and no future session should re-enable trading.
+            // Stay terminal until the strategy is restarted.
+            if (Level == GuardLevel.Locked) return;
+
             Set(GuardLevel.Armed, "Session start - re-armed");
         }
 

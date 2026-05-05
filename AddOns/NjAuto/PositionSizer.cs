@@ -14,12 +14,21 @@ namespace NinjaTrader.NinjaScript.AddOns.NjAuto
 {
     public sealed class PositionSizer
     {
+        public enum SkipCode
+        {
+            None,
+            NoTier,
+            DailyRoomZero,
+            SlTooTight
+        }
+
         public sealed class SizingDecision
         {
             public bool TakeTrade;
             public int Contracts;
             public int SlTicks;
             public string Reason;
+            public SkipCode Code;
         }
 
         private readonly ScalingTable scaling;
@@ -48,6 +57,7 @@ namespace NinjaTrader.NinjaScript.AddOns.NjAuto
                     TakeTrade = false,
                     Contracts = 0,
                     SlTicks = 0,
+                    Code = SkipCode.NoTier,
                     Reason = "No scaling tier matched (contracts = 0)"
                 };
             }
@@ -60,6 +70,7 @@ namespace NinjaTrader.NinjaScript.AddOns.NjAuto
                     TakeTrade = false,
                     Contracts = contracts,
                     SlTicks = 0,
+                    Code = SkipCode.DailyRoomZero,
                     Reason = "Daily loss room exhausted"
                 };
             }
@@ -74,6 +85,7 @@ namespace NinjaTrader.NinjaScript.AddOns.NjAuto
                     TakeTrade = false,
                     Contracts = contracts,
                     SlTicks = rawSlTicks,
+                    Code = SkipCode.SlTooTight,
                     Reason = string.Format(
                         "SL ticks {0} below minimum {1} at {2} contracts",
                         rawSlTicks, minSlTicks, contracts)
@@ -87,6 +99,7 @@ namespace NinjaTrader.NinjaScript.AddOns.NjAuto
                 TakeTrade = true,
                 Contracts = contracts,
                 SlTicks = finalSlTicks,
+                Code = SkipCode.None,
                 Reason = string.Format("OK: {0}c x {1}t = ${2:F2} risk",
                     contracts, finalSlTicks, finalSlTicks * dollarsPerTickAtSize)
             };

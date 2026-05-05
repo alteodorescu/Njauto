@@ -68,7 +68,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         private string journalCsvPath;
 
         // ----- Log dedup -----
-        private string lastSkipReason;
+        private string lastSkipCategory;
 
         #region User Inputs
 
@@ -287,7 +287,12 @@ namespace NinjaTrader.NinjaScript.Strategies
                     }
                     catch (Exception ex)
                     {
-                        Print("Journal init failed: " + ex.Message);
+                        Print(string.Format(
+                            "Journal disabled - cannot use directory '{0}': {1}. " +
+                            "Leave the input blank or set a valid Windows path " +
+                            "(e.g. C:\\NjAuto\\journal).",
+                            JournalDir, ex.Message));
+                        journalCsvPath = null;
                     }
                 }
             }
@@ -359,7 +364,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             regime.Reset();
             barsAboveVwap = barsBelowVwap = 0;
             barsTouchingPocFromAbove = barsTouchingPocFromBelow = 0;
-            lastSkipReason = null;
+            lastSkipCategory = null;
 
             // Re-anchor equity bookkeeping for the new session.
             rules.OnSessionStart(GetCurrentEquity());
@@ -641,17 +646,18 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             if (!decision.TakeTrade)
             {
-                // Only log when the reason changes - signals can fire on
-                // many consecutive bars and the log would otherwise flood.
-                if (VerboseLog && decision.Reason != lastSkipReason)
+                // Dedupe by category - the full reason includes numbers that
+                // change every bar and would defeat per-reason dedup.
+                string category = "sizing/" + decision.Code;
+                if (VerboseLog && category != lastSkipCategory)
                 {
                     Print("[Skip] " + decision.Reason);
-                    lastSkipReason = decision.Reason;
+                    lastSkipCategory = category;
                 }
                 Journal("skip", sig, decision);
                 return;
             }
-            lastSkipReason = null;
+            lastSkipCategory = null;
 
             double slDistance = decision.SlTicks * meta.TickSize;
             double slPrice = sig.IsLong ? sig.EntryPrice - slDistance : sig.EntryPrice + slDistance;
@@ -660,9 +666,14 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             if (tpDistance < MinRMultiple * slDistance)
             {
-                if (VerboseLog) Print(string.Format(
-                    "[Skip] TP {0:F2} below {1}R floor ({2:F2})",
-                    tpDistance, MinRMultiple, MinRMultiple * slDistance));
+                const string minRCategory = "minR";
+                if (VerboseLog && minRCategory != lastSkipCategory)
+                {
+                    Print(string.Format(
+                        "[Skip] TP below {0}R floor (most recent: {1:F2} vs {2:F2})",
+                        MinRMultiple, tpDistance, MinRMultiple * slDistance));
+                    lastSkipCategory = minRCategory;
+                }
                 Journal("skip-minR", sig, decision);
                 return;
             }
