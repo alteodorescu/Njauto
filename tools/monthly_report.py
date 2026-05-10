@@ -35,6 +35,11 @@ DAILY_LOSS_LIMIT = 5_000.0
 OVERALL_LOSS_LIMIT = 10_000.0     # static from start
 PAYOUT_TARGET = 4_000.0           # over $100K -> payout taken
 
+# FundingPips 2 standard $100K challenge fee. Adjust if a promo / smaller
+# account size is being modelled. Each new account purchased (initial +
+# every loss replacement) pays this fee in the month it was bought.
+CHALLENGE_FEE = 549.0
+
 
 def load_deals():
     wb = openpyxl.load_workbook(XLSX, read_only=True, data_only=True)
@@ -57,14 +62,26 @@ def load_deals():
 
 def simulate(deals):
     """
-    Returns (events, summary). events is a list of dicts with keys:
-      ts, kind ('LOSS' or 'PAYOUT'), amount, account_no
+    Returns events. events is a list of dicts with keys:
+      ts, kind ('LOSS' | 'PAYOUT' | 'PURCHASE'), amount, account_no
+    PURCHASE events emit CHALLENGE_FEE as a positive cost (recorded as
+    negative in profit) every time a new account is bought - once at
+    the very first deal, and once for each loss replacement.
     """
     events = []
     balance = START_BALANCE
     day_start_balance = START_BALANCE
     current_day = None
     account_no = 1
+
+    if deals:
+        # Initial challenge purchase, attributed to the first deal's month.
+        events.append({
+            "ts": deals[0][0],
+            "kind": "PURCHASE",
+            "amount": CHALLENGE_FEE,
+            "account_no": account_no,
+        })
 
     for ts, profit in deals:
         deal_day = ts.date()
@@ -79,15 +96,21 @@ def simulate(deals):
         breached_daily = balance <= day_start_balance - DAILY_LOSS_LIMIT
 
         if breached_overall or breached_daily:
-            kind = "LOSS"
             events.append({
                 "ts": ts,
-                "kind": kind,
+                "kind": "LOSS",
                 "amount": balance - START_BALANCE,  # negative
                 "account_no": account_no,
                 "breach": "overall" if breached_overall else "daily",
             })
+            # Replacement account is purchased immediately.
             account_no += 1
+            events.append({
+                "ts": ts,
+                "kind": "PURCHASE",
+                "amount": CHALLENGE_FEE,
+                "account_no": account_no,
+            })
             balance = START_BALANCE
             day_start_balance = START_BALANCE
             continue
@@ -107,12 +130,14 @@ def simulate(deals):
 
 
 def monthly_summary(events):
-    """Aggregate to (year, month) -> {'losses', 'payouts_count', 'payouts_sum'}."""
+    """Aggregate to (year, month) -> per-month stats including fees + profit."""
     by_month = defaultdict(lambda: {
         "losses_overall": 0,
         "losses_daily": 0,
         "payouts_count": 0,
         "payouts_sum": 0.0,
+        "purchases_count": 0,
+        "fees_sum": 0.0,
     })
     for e in events:
         key = (e["ts"].year, e["ts"].month)
@@ -121,9 +146,12 @@ def monthly_summary(events):
                 by_month[key]["losses_overall"] += 1
             else:
                 by_month[key]["losses_daily"] += 1
-        else:
+        elif e["kind"] == "PAYOUT":
             by_month[key]["payouts_count"] += 1
             by_month[key]["payouts_sum"] += e["amount"]
+        elif e["kind"] == "PURCHASE":
+            by_month[key]["purchases_count"] += 1
+            by_month[key]["fees_sum"] += e["amount"]
     return by_month
 
 
@@ -136,6 +164,9 @@ def write_report(events, by_month, deals):
     total_losses = sum(1 for e in events if e["kind"] == "LOSS")
     total_payouts_n = sum(1 for e in events if e["kind"] == "PAYOUT")
     total_payouts_sum = sum(e["amount"] for e in events if e["kind"] == "PAYOUT")
+    total_purchases = sum(1 for e in events if e["kind"] == "PURCHASE")
+    total_fees = sum(e["amount"] for e in events if e["kind"] == "PURCHASE")
+    total_profit = total_payouts_sum - total_fees
     first_dt = deals[0][0] if deals else None
     last_dt = deals[-1][0] if deals else None
 
@@ -151,26 +182,32 @@ def write_report(events, by_month, deals):
     lines.append(f"- Daily loss limit: **${DAILY_LOSS_LIMIT:,.0f}** from day-start equity (5%) -> account lost")
     lines.append(f"- Max overall loss: **${OVERALL_LOSS_LIMIT:,.0f}** static from start (10%) -> account lost")
     lines.append(f"- Payout target: **${PAYOUT_TARGET:,.0f}** above $100K (4%) -> payout taken, balance reset to $100K, account continues")
+    lines.append(f"- Challenge fee: **${CHALLENGE_FEE:,.0f}** per new account (initial purchase + every loss replacement)")
     lines.append("- Lost accounts are replaced with a fresh $100K account; account counter increments.")
     lines.append("")
     lines.append("## Totals")
+    lines.append(f"- **Accounts purchased**: {total_purchases:,} (1 initial + {total_losses:,} replacements)")
     lines.append(f"- **Accounts lost**: {total_losses:,}")
     lines.append(f"- **Payouts taken**: {total_payouts_n:,}")
     lines.append(f"- **Total payout $**: ${total_payouts_sum:,.2f}")
+    lines.append(f"- **Total fees $**: ${total_fees:,.2f}")
+    lines.append(f"- **Net profit $**: ${total_profit:,.2f}")
     lines.append(f"- **Avg payout**: ${(total_payouts_sum/total_payouts_n if total_payouts_n else 0):,.2f}")
     lines.append("")
     lines.append("## Monthly breakdown")
     lines.append("")
-    lines.append("| Month | Lost (overall) | Lost (daily) | Lost total | Payouts # | Payouts $ |")
-    lines.append("|---|---:|---:|---:|---:|---:|")
+    lines.append("| Month | Lost (overall) | Lost (daily) | Lost total | Payouts # | Payouts $ | Challenges # | Fees $ | Profit $ |")
+    lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|")
 
     for key in sorted(by_month.keys()):
         y, m = key
         d = by_month[key]
         lost_total = d["losses_overall"] + d["losses_daily"]
+        profit = d["payouts_sum"] - d["fees_sum"]
         lines.append(
             f"| {y}-{m:02d} | {d['losses_overall']} | {d['losses_daily']} | "
-            f"{lost_total} | {d['payouts_count']} | ${d['payouts_sum']:,.2f} |"
+            f"{lost_total} | {d['payouts_count']} | ${d['payouts_sum']:,.2f} | "
+            f"{d['purchases_count']} | ${d['fees_sum']:,.2f} | ${profit:,.2f} |"
         )
 
     md.write_text("\n".join(lines) + "\n")
@@ -179,15 +216,23 @@ def write_report(events, by_month, deals):
     # Also CSV for easy spreadsheet import
     with csv_out.open("w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["month", "lost_overall", "lost_daily", "lost_total", "payouts_count", "payouts_sum_usd"])
+        w.writerow([
+            "month", "lost_overall", "lost_daily", "lost_total",
+            "payouts_count", "payouts_sum_usd",
+            "challenges_count", "fees_sum_usd", "profit_usd",
+        ])
         for key in sorted(by_month.keys()):
             y, m = key
             d = by_month[key]
             lost_total = d["losses_overall"] + d["losses_daily"]
-            w.writerow([f"{y}-{m:02d}", d["losses_overall"], d["losses_daily"],
-                        lost_total, d["payouts_count"], f"{d['payouts_sum']:.2f}"])
+            profit = d["payouts_sum"] - d["fees_sum"]
+            w.writerow([
+                f"{y}-{m:02d}", d["losses_overall"], d["losses_daily"], lost_total,
+                d["payouts_count"], f"{d['payouts_sum']:.2f}",
+                d["purchases_count"], f"{d['fees_sum']:.2f}", f"{profit:.2f}",
+            ])
     print(f"Wrote {csv_out}")
-    return md, csv_out, total_losses, total_payouts_n, total_payouts_sum
+    return md, csv_out, total_losses, total_payouts_n, total_payouts_sum, total_fees, total_profit
 
 
 def main():
@@ -198,9 +243,10 @@ def main():
     events = simulate(deals)
     print(f"  {len(events):,} events")
     by_month = monthly_summary(events)
-    md, csv_out, losses, payouts, payouts_sum = write_report(events, by_month, deals)
+    md, csv_out, losses, payouts, payouts_sum, fees, profit = write_report(events, by_month, deals)
     print()
-    print(f"TOTALS: lost={losses}  payouts={payouts}  payouts_sum=${payouts_sum:,.2f}")
+    print(f"TOTALS: lost={losses}  payouts={payouts}  payouts_sum=${payouts_sum:,.2f}  "
+          f"fees=${fees:,.2f}  profit=${profit:,.2f}")
 
 
 if __name__ == "__main__":

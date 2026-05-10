@@ -38,13 +38,19 @@ def load_monthly():
                 "lost_total": int(r["lost_total"]),
                 "payouts_count": int(r["payouts_count"]),
                 "payouts_sum": float(r["payouts_sum_usd"]),
+                "challenges_count": int(r["challenges_count"]),
+                "fees_sum": float(r["fees_sum_usd"]),
+                "profit": float(r["profit_usd"]),
             })
     return rows
 
 
 def yearly_rollup(monthly):
-    yr = defaultdict(lambda: {"lost_overall": 0, "lost_daily": 0,
-                              "lost_total": 0, "payouts_count": 0, "payouts_sum": 0.0})
+    yr = defaultdict(lambda: {
+        "lost_overall": 0, "lost_daily": 0, "lost_total": 0,
+        "payouts_count": 0, "payouts_sum": 0.0,
+        "challenges_count": 0, "fees_sum": 0.0, "profit": 0.0,
+    })
     for r in monthly:
         y = r["month"][:4]
         yr[y]["lost_overall"] += r["lost_overall"]
@@ -52,6 +58,9 @@ def yearly_rollup(monthly):
         yr[y]["lost_total"] += r["lost_total"]
         yr[y]["payouts_count"] += r["payouts_count"]
         yr[y]["payouts_sum"] += r["payouts_sum"]
+        yr[y]["challenges_count"] += r["challenges_count"]
+        yr[y]["fees_sum"] += r["fees_sum"]
+        yr[y]["profit"] += r["profit"]
     return [{"year": y, **yr[y]} for y in sorted(yr)]
 
 
@@ -79,19 +88,43 @@ def auto_width(ws):
         ws.column_dimensions[col_letter].width = min(max(width, 8), 22)
 
 
+CURRENCY_COLS = (6, 8, 9)  # Payouts $, Fees $, Profit $
+
+HEADERS_MONTHLY = ["Month", "Lost (overall)", "Lost (daily)", "Lost total",
+                   "Payouts #", "Payouts $",
+                   "Challenges #", "Fees $", "Profit $"]
+HEADERS_YEARLY = ["Year"] + HEADERS_MONTHLY[1:]
+
+# Negative profit gets red font, positive gets green.
+RED = Font(color="C00000")
+GREEN = Font(color="007A00")
+
+
+def _apply_styles(ws, last_row, currency_cols, profit_col):
+    for row in range(2, last_row + 1):
+        for c in currency_cols:
+            ws.cell(row=row, column=c).number_format = '"$"#,##0.00'
+        for c in range(2, len(HEADERS_MONTHLY) + 1):
+            ws.cell(row=row, column=c).alignment = RIGHT
+        # Color profit cell by sign.
+        v = ws.cell(row=row, column=profit_col).value
+        if isinstance(v, (int, float)):
+            ws.cell(row=row, column=profit_col).font = GREEN if v >= 0 else RED
+
+
 def write_monthly(wb, monthly):
     ws = wb.create_sheet("Monthly")
-    headers = ["Month", "Lost (overall)", "Lost (daily)", "Lost total",
-               "Payouts #", "Payouts $"]
-    ws.append(headers)
-    style_header(ws, 1, len(headers))
+    ws.append(HEADERS_MONTHLY)
+    style_header(ws, 1, len(HEADERS_MONTHLY))
 
     for r in monthly:
-        ws.append([r["month"], r["lost_overall"], r["lost_daily"],
-                   r["lost_total"], r["payouts_count"], r["payouts_sum"]])
+        ws.append([
+            r["month"], r["lost_overall"], r["lost_daily"], r["lost_total"],
+            r["payouts_count"], r["payouts_sum"],
+            r["challenges_count"], r["fees_sum"], r["profit"],
+        ])
 
     last = len(monthly) + 1
-    # Totals row
     ws.append([
         "TOTAL",
         sum(r["lost_overall"] for r in monthly),
@@ -99,31 +132,29 @@ def write_monthly(wb, monthly):
         sum(r["lost_total"] for r in monthly),
         sum(r["payouts_count"] for r in monthly),
         sum(r["payouts_sum"] for r in monthly),
+        sum(r["challenges_count"] for r in monthly),
+        sum(r["fees_sum"] for r in monthly),
+        sum(r["profit"] for r in monthly),
     ])
-    style_total(ws, last + 1, len(headers))
-
-    # Currency formatting on the Payouts $ column for all data rows + total
-    for row in range(2, last + 2):
-        ws.cell(row=row, column=6).number_format = '"$"#,##0.00'
-        for c in range(2, 6):
-            ws.cell(row=row, column=c).alignment = RIGHT
-        ws.cell(row=row, column=6).alignment = RIGHT
+    style_total(ws, last + 1, len(HEADERS_MONTHLY))
+    _apply_styles(ws, last + 1, CURRENCY_COLS, profit_col=9)
 
     ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:F{last}"
+    ws.auto_filter.ref = f"A1:I{last}"
     auto_width(ws)
 
 
 def write_yearly(wb, yearly):
     ws = wb.create_sheet("Yearly")
-    headers = ["Year", "Lost (overall)", "Lost (daily)", "Lost total",
-               "Payouts #", "Payouts $"]
-    ws.append(headers)
-    style_header(ws, 1, len(headers))
+    ws.append(HEADERS_YEARLY)
+    style_header(ws, 1, len(HEADERS_YEARLY))
 
     for r in yearly:
-        ws.append([r["year"], r["lost_overall"], r["lost_daily"],
-                   r["lost_total"], r["payouts_count"], r["payouts_sum"]])
+        ws.append([
+            r["year"], r["lost_overall"], r["lost_daily"], r["lost_total"],
+            r["payouts_count"], r["payouts_sum"],
+            r["challenges_count"], r["fees_sum"], r["profit"],
+        ])
 
     last = len(yearly) + 1
     ws.append([
@@ -133,17 +164,15 @@ def write_yearly(wb, yearly):
         sum(r["lost_total"] for r in yearly),
         sum(r["payouts_count"] for r in yearly),
         sum(r["payouts_sum"] for r in yearly),
+        sum(r["challenges_count"] for r in yearly),
+        sum(r["fees_sum"] for r in yearly),
+        sum(r["profit"] for r in yearly),
     ])
-    style_total(ws, last + 1, len(headers))
-
-    for row in range(2, last + 2):
-        ws.cell(row=row, column=6).number_format = '"$"#,##0.00'
-        for c in range(2, 6):
-            ws.cell(row=row, column=c).alignment = RIGHT
-        ws.cell(row=row, column=6).alignment = RIGHT
+    style_total(ws, last + 1, len(HEADERS_YEARLY))
+    _apply_styles(ws, last + 1, CURRENCY_COLS, profit_col=9)
 
     ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:F{last}"
+    ws.auto_filter.ref = f"A1:I{last}"
     auto_width(ws)
 
 
